@@ -1,4 +1,8 @@
 #include <Windows.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <iphlpapi.h>
+#include <icmpapi.h>
 #include <d3d11.h>
 #include <dxgi.h>
 
@@ -6,6 +10,8 @@
 #include <cstring>
 #include <cmath>
 #include <unordered_map>
+#include <atomic>
+#include <thread>
 
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include "imgui.h"
@@ -480,6 +486,52 @@ static bool AnimSmallButton(const char* label)
     return pressed;
 }
 
+static bool AnimIconButton(const char* id, const char* icon, const ImVec2& sizeArg = ImVec2(20.f, 20.f))
+{
+    ImGuiWindow* window = ImGui::GetCurrentWindow();
+    if (window->SkipItems)
+        return false;
+
+    const ImGuiID gid = window->GetID(id);
+    ImVec2 pos = window->DC.CursorPos;
+    pos.y += window->DC.CurrLineTextBaseOffset;
+    const ImRect bb(pos, ImVec2(pos.x + sizeArg.x, pos.y + sizeArg.y));
+    ImGui::ItemSize(sizeArg, 0.f);
+    if (!ImGui::ItemAdd(bb, gid))
+        return false;
+
+    bool hovered = false, held = false;
+    const bool pressed = ImGui::ButtonBehavior(bb, gid, &hovered, &held);
+
+    float& fHover = g_mapHoverAnim[gid];
+    float& fActive = g_mapActiveAnim[gid];
+    AnimEase(fHover, (hovered || held) ? 1.f : 0.f, 18.f);
+    AnimEase(fActive, held ? 1.f : 0.f, 22.f);
+
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const ImVec4 base = style.Colors[ImGuiCol_Button];
+    const ImVec4 hoverCol = style.Colors[ImGuiCol_ButtonHovered];
+    const ImVec4 activeCol = style.Colors[ImGuiCol_ButtonActive];
+    const ImVec4 col = ImLerp(ImLerp(base, hoverCol, fHover), activeCol, fActive);
+
+    ImDrawList* dl = window->DrawList;
+    dl->AddRectFilled(bb.Min, bb.Max, ImGui::GetColorU32(col), style.FrameRounding);
+
+    if (g_pLucideFont)
+    {
+        ImGui::PushFont(g_pLucideFont);
+        const ImVec2 iconSize = ImGui::CalcTextSize(icon);
+        const ImVec2 textPos = ImVec2(
+            bb.Min.x + (sizeArg.x - iconSize.x) * 0.5f,
+            bb.Min.y + (sizeArg.y - iconSize.y) * 0.5f
+        );
+        dl->AddText(textPos, ImGui::GetColorU32(ImGuiCol_Text), icon);
+        ImGui::PopFont();
+    }
+
+    return pressed;
+}
+
 static bool AnimToggle(const char* id, bool* pValue)
 {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
@@ -584,19 +636,149 @@ static const char* kRegionNamesRu[RegionChanger::COUNT] =
     "ROW", "Европа", "Юго-Вост. Азия", "Южная Америка", "Россия", "Океания"
 };
 
-struct DataCenter { int id; int mode; const char* name; const char* nameRu; };
-static const DataCenter kDataCenters[] = {
-    { 0,  -1, "Any", "Любой" },
-    { 1,   0, "US West", "Запад США" }, { 2, 0, "US East", "Восток США" }, { 22, 0, "US South-West", "Юго-запад США" },
-    { 23,  0, "US South-East", "Юго-восток США" }, { 27, 0, "US North-Central", "Северо-центр США" }, { 31, 0, "US South-Central", "Юго-центр США" },
-    { 3,   1, "France", "Франция" }, { 45, 1, "England", "Англия" }, { 52, 1, "Germany", "Германия" },
-    { 54,  1, "Frankfurt", "Франкфурт" }, { 55, 1, "Stockholm", "Стокгольм" }, { 56, 1, "London", "Лондон" },
-    { 8,   1, "Sweden", "Швеция" }, { 9, 1, "Italy", "Италия" }, { 21, 1, "Spain", "Испания" }, { 28, 1, "Poland", "Польша" }, { 44, 1, "Finland", "Финляндия" },
-    { 11,  1, "South Africa", "Южная Африка" },
-    { 5,   2, "Singapore", "Сингапур" }, { 24, 2, "Hong Kong", "Гонконг" }, { 19, 2, "Japan", "Япония" }, { 39, 2, "South Korea", "Южная Корея" },
-    { 10,  3, "South America", "Южная Америка" }, { 14, 3, "Chile", "Чили" }, { 15, 3, "Peru", "Перу" }, { 38, 3, "Argentina", "Аргентина" },
-    { 7,   5, "Australia", "Австралия" },
+struct DataCenter {
+    int id;
+    int mode;
+    const char* name;
+    const char* nameRu;
+    const char* host;
 };
+
+static const DataCenter kDataCenters[] = {
+    { 0,  -1, "Any", "Любой", nullptr },
+    { 1,   0, "US West", "Запад США", "162.254.196.1" },
+    { 2,   0, "US East", "Восток США", "162.254.192.1" },
+    { 22,  0, "US South-West", "Юго-запад США", "162.254.194.1" },
+    { 23,  0, "US South-East", "Юго-восток США", "162.254.199.33" },
+    { 27,  0, "US North-Central", "Северо-центр США", "162.254.193.1" },
+    { 31,  0, "US South-Central", "Юго-центр США", "162.254.195.1" },
+    { 3,   1, "France", "Франция", "155.133.246.33" },
+    { 45,  1, "England", "Англия", "155.133.248.1" },
+    { 52,  1, "Germany", "Германия", "155.133.226.1" },
+    { 54,  1, "Frankfurt", "Франкфурт", "155.133.226.1" },
+    { 55,  1, "Stockholm", "Стокгольм", "155.133.252.1" },
+    { 56,  1, "London", "Лондон", "155.133.248.1" },
+    { 8,   1, "Sweden", "Швеция", "155.133.252.1" },
+    { 9,   1, "Italy", "Италия", "185.25.180.1" },
+    { 21,  1, "Spain", "Испания", "185.25.182.1" },
+    { 28,  1, "Poland", "Польша", "155.133.230.1" },
+    { 44,  1, "Finland", "Финляндия", "155.133.250.1" },
+    { 11,  1, "South Africa", "Южная Африка", "155.133.238.1" },
+    { 5,   2, "Singapore", "Сингапур", "103.10.124.1" },
+    { 24,  2, "Hong Kong", "Гонконг", "45.121.184.1" },
+    { 19,  2, "Japan", "Япония", "155.133.239.1" },
+    { 39,  2, "South Korea", "Южная Корея", "162.254.198.1" },
+    { 10,  3, "South America", "Южная Америка", "155.133.227.1" },
+    { 14,  3, "Chile", "Чили", "143.137.146.1" },
+    { 15,  3, "Peru", "Перу", "155.133.251.33" },
+    { 38,  3, "Argentina", "Аргентина", "155.133.255.1" },
+    { 7,   5, "Australia", "Австралия", "103.10.125.1" },
+};
+
+static std::unordered_map<int, std::atomic<int>> g_mapPingMs;
+static std::atomic<bool> g_bPingRunning = false;
+static float g_fPingTimer = 0.0f;
+
+static void TriggerPingProbe()
+{
+    bool expected = false;
+    if (!g_bPingRunning.compare_exchange_strong(expected, true))
+    {
+        DEV_LOG("PingProbe: already running, skipping");
+        return;
+    }
+
+    DEV_LOG("PingProbe: started ping probe for data centers...");
+
+    std::thread([]() {
+        HANDLE hIcmp = IcmpCreateFile();
+        if (hIcmp == INVALID_HANDLE_VALUE)
+        {
+            DEV_ERR("PingProbe: IcmpCreateFile failed (err=%lu)", GetLastError());
+            g_bPingRunning.store(false);
+            return;
+        }
+
+        int successCount = 0;
+        int failCount = 0;
+
+        for (const auto& dc : kDataCenters)
+        {
+            if (!dc.host || dc.id == 0)
+                continue;
+
+            IPAddr ip = 0;
+            in_addr direct{};
+            if (inet_pton(AF_INET, dc.host, &direct) == 1)
+            {
+                ip = direct.S_un.S_addr;
+            }
+            else
+            {
+                addrinfo hints{};
+                hints.ai_family = AF_INET;
+                hints.ai_socktype = SOCK_STREAM;
+                addrinfo* res = nullptr;
+                if (getaddrinfo(dc.host, nullptr, &hints, &res) == 0 && res)
+                {
+                    ip = ((sockaddr_in*)res->ai_addr)->sin_addr.S_un.S_addr;
+                    freeaddrinfo(res);
+                }
+            }
+
+            if (!ip)
+            {
+                DEV_WARN("PingProbe: failed to resolve host '%s' for [%s]", dc.host, dc.name);
+                g_mapPingMs[dc.id].store(-2);
+                failCount++;
+                continue;
+            }
+
+            char sendData[32] = "region_ping";
+            DWORD replySize = sizeof(ICMP_ECHO_REPLY) + sizeof(sendData) + 8;
+            LPVOID replyBuf = malloc(replySize);
+            if (!replyBuf)
+            {
+                g_mapPingMs[dc.id].store(-2);
+                failCount++;
+                continue;
+            }
+
+            DWORD r = IcmpSendEcho(hIcmp, ip, sendData, static_cast<WORD>(sizeof(sendData)),
+                                   nullptr, replyBuf, replySize, 1200);
+            if (r > 0)
+            {
+                auto* reply = reinterpret_cast<ICMP_ECHO_REPLY*>(replyBuf);
+                if (reply->Status == IP_SUCCESS)
+                {
+                    int rtt = static_cast<int>(reply->RoundTripTime);
+                    g_mapPingMs[dc.id].store(rtt);
+                    DEV_LOG("PingProbe: %s (%s) -> %d ms", dc.name, dc.host, rtt);
+                    successCount++;
+                }
+                else
+                {
+                    g_mapPingMs[dc.id].store(-2);
+                    DEV_WARN("PingProbe: %s (%s) -> echo status %lu", dc.name, dc.host, reply->Status);
+                    failCount++;
+                }
+            }
+            else
+            {
+                g_mapPingMs[dc.id].store(-2);
+                DEV_WARN("PingProbe: %s (%s) -> timeout / error %lu", dc.name, dc.host, GetLastError());
+                failCount++;
+            }
+            free(replyBuf);
+        }
+
+        if (hIcmp != INVALID_HANDLE_VALUE)
+            IcmpCloseHandle(hIcmp);
+
+        DEV_LOG("PingProbe: finished (success=%d, failed=%d)", successCount, failCount);
+        g_bPingRunning.store(false);
+    }).detach();
+}
 
 static void RenderMenu()
 {
@@ -624,14 +806,28 @@ static void RenderMenu()
     ImGui::SameLine();
     AnimToggle("##region_changer_toggle", &RegionChanger::g_bEnabled);
     ImGui::SameLine();
+    if (AnimIconButton("##ping_servers_btn", ICON_LC_ZAP, ImVec2(22.f, 20.f)))
+    {
+        PlayUISound(UISound::Select);
+        TriggerPingProbe();
+    }
+    if (ImGui::IsItemHovered())
+    {
+        ImGui::SetTooltip("%s", Tr("Ping all servers", "Пинг всех серверов"));
+    }
+    ImGui::SameLine();
+    AnimColorSwatch("##accent_color", &g_vAccentColor);
+    ImGui::SameLine();
     if (AnimSmallButton(Tr("RU", "EN")))
     {
         PlayUISound(UISound::Select);
         g_nLanguage = (g_nLanguage == 1) ? 0 : 1;
         DEV_LOG("Menu: language -> %s", g_nLanguage == 1 ? "RU" : "EN");
     }
-    ImGui::SameLine();
-    AnimColorSwatch("##accent_color", &g_vAccentColor);
+    if (ImGui::IsItemHovered())
+    {
+        ImGui::SetTooltip("%s", Tr("Switch language", "Сменить язык"));
+    }
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::Spacing();
@@ -685,7 +881,17 @@ static void RenderMenu()
             continue;
         const bool active = (RegionChanger::g_nDataCenter == dc.id);
         const char* szName = (g_nLanguage == 1) ? dc.nameRu : dc.name;
-        if (AnimSelectable(szName, active))
+
+        int ping = (dc.id == 0) ? -1 : g_mapPingMs[dc.id].load();
+        char labelWithPing[128];
+        if (ping > 0)
+            ImFormatString(labelWithPing, sizeof(labelWithPing), "%s  [%d ms]", szName, ping);
+        else if (ping == -2)
+            ImFormatString(labelWithPing, sizeof(labelWithPing), "%s  [--]", szName);
+        else
+            ImFormatString(labelWithPing, sizeof(labelWithPing), "%s", szName);
+
+        if (AnimSelectable(labelWithPing, active))
         {
             PlayUISound(UISound::Select);
             RegionChanger::g_nDataCenter = dc.id;
