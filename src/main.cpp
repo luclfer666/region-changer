@@ -46,6 +46,7 @@ static bool g_bMenuOpen = false;
 static float g_fOpenAnim = 0.f;
 static ImVec2 g_vAnimCenter = ImVec2(0.f, 0.f);
 static bool g_bInsertWasDown = false;
+static bool g_bDeleteWasDown = false;
 static ULONGLONG g_ullInjectTick = 0;
 
 static ImVec2 g_vMenuPos(-1.f, -1.f);
@@ -821,13 +822,15 @@ static long __stdcall Hook_Present(IDXGISwapChain* pSwap, UINT sync, UINT flags)
 
     if (g_bInit)
     {
-        const bool bDown = (GetAsyncKeyState(VK_INSERT) & 0x8000) != 0;
-        if (bDown && !g_bInsertWasDown)
+        const bool bInsertDown = (GetAsyncKeyState(VK_INSERT) & 0x8000) != 0;
+        const bool bDeleteDown = (GetAsyncKeyState(VK_DELETE) & 0x8000) != 0;
+        if ((bInsertDown && !g_bInsertWasDown) || (bDeleteDown && !g_bDeleteWasDown))
         {
             SetMenuOpen(!g_bMenuOpen);
-            DEV_LOG("INSERT: menu %s", g_bMenuOpen ? "OPEN" : "CLOSED");
+            DEV_LOG("Menu key: menu %s", g_bMenuOpen ? "OPEN" : "CLOSED");
         }
-        g_bInsertWasDown = bDown;
+        g_bInsertWasDown = bInsertDown;
+        g_bDeleteWasDown = bDeleteDown;
 
         const bool bInGame = EngineIsInGame();
         if (bInGame && !g_bWasInGame && !g_bAutoOpened && !g_bMenuOpen)
