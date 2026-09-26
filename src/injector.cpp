@@ -2,6 +2,7 @@
 #include <TlHelp32.h>
 #include <shellapi.h>
 #include <wininet.h>
+#include <conio.h>
 
 #include <cstdio>
 #include <cstdarg>
@@ -10,14 +11,17 @@
 #include <vector>
 #include <ctime>
 #include <thread>
+#include <atomic>
+#include <future>
 
 #pragma comment(lib, "shell32.lib")
+#pragma comment(lib, "wininet.lib")
 
 static constexpr DWORD STEAM_APPID        = 1422450;
 static constexpr DWORD PROCESS_STALE_SECS = 10;
 static constexpr const char* TARGET_PROC  = "deadlock.exe";
 
-static constexpr const char* CURRENT_VERSION    = "1.0.3";
+static constexpr const char* CURRENT_VERSION    = "1.0.2";
 static constexpr const char* UPDATE_API_HOST    = "api.github.com";
 static constexpr const char* UPDATE_API_PATH    = "/repos/wrongsprat/region-changer/releases/latest";
 static constexpr const char* UPDATE_RELEASE_URL = "https://github.com/wrongsprat/region-changer/releases/tag/1.0.2";
@@ -97,6 +101,11 @@ static bool HttpGet(const char* host, const char* path, std::string& out)
     HINTERNET hSession = InternetOpenA("region-changer-injector", INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0);
     if (!hSession)
         return false;
+
+    DWORD timeoutMs = 2500;
+    InternetSetOptionA(hSession, INTERNET_OPTION_CONNECT_TIMEOUT, &timeoutMs, sizeof(timeoutMs));
+    InternetSetOptionA(hSession, INTERNET_OPTION_RECEIVE_TIMEOUT, &timeoutMs, sizeof(timeoutMs));
+    InternetSetOptionA(hSession, INTERNET_OPTION_SEND_TIMEOUT, &timeoutMs, sizeof(timeoutMs));
 
     HINTERNET hConnect = InternetConnectA(hSession, host, INTERNET_DEFAULT_HTTPS_PORT,
                                           nullptr, nullptr, INTERNET_SERVICE_HTTP, 0, 0);
@@ -179,34 +188,48 @@ static bool IsNewerVersion(const std::string& latest, const std::string& current
 
 static bool CheckForUpdate(std::string& latestTag)
 {
-    LogInfo("проверка обновлений (текущая версия: %s)...", CURRENT_VERSION);
+    printf("[+] проверка обновлений (текущая версия: %s)... \033[92m[Enter - пропустить]\033[0m\n", CURRENT_VERSION);
 
-    std::string body;
-    if (!HttpGet(UPDATE_API_HOST, UPDATE_API_PATH, body))
+    std::atomic<bool> cancelRequested{ false };
+    auto futureUpdate = std::async(std::launch::async, [&cancelRequested, &latestTag]() -> bool {
+        std::string body;
+        if (!HttpGet(UPDATE_API_HOST, UPDATE_API_PATH, body) || cancelRequested.load())
+            return false;
+
+        latestTag = ExtractJsonString(body, "tag_name");
+        if (latestTag.empty() || cancelRequested.load())
+            return false;
+
+        std::string version = latestTag;
+        if (!version.empty() && (version[0] == 'v' || version[0] == 'V'))
+            version.erase(0, 1);
+
+        return IsNewerVersion(version, CURRENT_VERSION);
+    });
+
+    while (futureUpdate.wait_for(std::chrono::milliseconds(50)) != std::future_status::ready)
     {
-        LogWarn("не удалось проверить обновления");
-        return false;
+        if (_kbhit())
+        {
+            int ch = _getch();
+            if (ch == '\r' || ch == '\n' || ch == 27) // Enter or Esc
+            {
+                cancelRequested.store(true);
+                LogInfo("проверка обновлений пропущена пользователем");
+                return false;
+            }
+        }
     }
 
-    latestTag = ExtractJsonString(body, "tag_name");
-    if (latestTag.empty())
+    bool hasUpdate = futureUpdate.get();
+    if (hasUpdate)
     {
-        LogWarn("сервер вернул некорректный ответ");
-        return false;
+        LogInfo("доступно обновление: %s -> %s", CURRENT_VERSION, latestTag.c_str());
+        return true;
     }
 
-    std::string version = latestTag;
-    if (!version.empty() && (version[0] == 'v' || version[0] == 'V'))
-        version.erase(0, 1);
-
-    if (!IsNewerVersion(version, CURRENT_VERSION))
-    {
-        LogInfo("установлена последняя версия");
-        return false;
-    }
-
-    LogInfo("доступно обновление: %s -> %s", CURRENT_VERSION, latestTag.c_str());
-    return true;
+    LogInfo("установлена последняя версия");
+    return false;
 }
 
 static bool IsAdmin()
