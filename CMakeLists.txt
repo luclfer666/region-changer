@@ -37,7 +37,7 @@ target_compile_definitions(dysonbehind PRIVATE
     _WIN32_WINNT=0x0601 WINVER=0x0601
     $<$<CONFIG:Debug>:_DEBUG>
     $<$<CONFIG:Release>:NDEBUG>)
-target_link_libraries(dysonbehind PRIVATE d3d11 dxgi winmm)
+target_link_libraries(dysonbehind PRIVATE d3d11 dxgi winmm iphlpapi ws2_32)
 
 if(MSVC)
     target_compile_options(dysonbehind PRIVATE /permissive- /W3 /utf-8 /MP)
