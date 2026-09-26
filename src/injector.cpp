@@ -17,7 +17,7 @@ static constexpr DWORD STEAM_APPID        = 1422450;
 static constexpr DWORD PROCESS_STALE_SECS = 10;
 static constexpr const char* TARGET_PROC  = "deadlock.exe";
 
-static constexpr const char* CURRENT_VERSION    = "1.0.2";
+static constexpr const char* CURRENT_VERSION    = "1.0.3";
 static constexpr const char* UPDATE_API_HOST    = "api.github.com";
 static constexpr const char* UPDATE_API_PATH    = "/repos/wrongsprat/region-changer/releases/latest";
 static constexpr const char* UPDATE_RELEASE_URL = "https://github.com/wrongsprat/region-changer/releases/tag/1.0.2";
