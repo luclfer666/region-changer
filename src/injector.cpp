@@ -2,20 +2,16 @@
 #include <TlHelp32.h>
 #include <shellapi.h>
 #include <wininet.h>
-#include <winhttp.h>
 
 #include <cstdio>
 #include <cstdarg>
 #include <cstring>
-#include <cctype>
 #include <string>
 #include <vector>
-#include <fstream>
 #include <ctime>
 #include <thread>
 
 #pragma comment(lib, "shell32.lib")
-#pragma comment(lib, "wininet.lib")
 
 static constexpr DWORD STEAM_APPID        = 1422450;
 static constexpr DWORD PROCESS_STALE_SECS = 10;
@@ -24,7 +20,7 @@ static constexpr const char* TARGET_PROC  = "deadlock.exe";
 static constexpr const char* CURRENT_VERSION    = "1.0.2";
 static constexpr const char* UPDATE_API_HOST    = "api.github.com";
 static constexpr const char* UPDATE_API_PATH    = "/repos/wrongsprat/region-changer/releases/latest";
-static constexpr const char* UPDATE_ASSET_PATH  = "/wrongsprat/region-changer/releases/latest/download/release.zip";
+static constexpr const char* UPDATE_RELEASE_URL = "https://github.com/wrongsprat/region-changer/releases/tag/1.0.2";
 
 static FILE* g_pLog = nullptr;
 
@@ -181,326 +177,35 @@ static bool IsNewerVersion(const std::string& latest, const std::string& current
     return false;
 }
 
-static bool DownloadFile(const std::string& url, const std::string& outputPath)
+static bool CheckForUpdate(std::string& latestTag)
 {
-    std::string value = url;
-    bool secure = false;
-    if (value.rfind("https://", 0) == 0)
-    {
-        secure = true;
-        value.erase(0, 8);
-    }
-    else if (value.rfind("http://", 0) == 0)
-    {
-        value.erase(0, 7);
-    }
-    else
-    {
-        return false;
-    }
-
-    const size_t slash = value.find('/');
-    const std::string host = slash == std::string::npos ? value : value.substr(0, slash);
-    const std::string path = slash == std::string::npos ? "/" : value.substr(slash);
-    const std::wstring wideHost(host.begin(), host.end());
-    const std::wstring widePath(path.begin(), path.end());
-
-    HINTERNET session = WinHttpOpen(L"region-changer-injector", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-                                    WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-    if (!session)
-        return false;
-
-    DWORD redirect = WINHTTP_OPTION_REDIRECT_POLICY_ALWAYS;
-    WinHttpSetOption(session, WINHTTP_OPTION_REDIRECT_POLICY, &redirect, sizeof(redirect));
-
-    HINTERNET connect = WinHttpConnect(session, wideHost.c_str(),
-                                       secure ? INTERNET_DEFAULT_HTTPS_PORT : INTERNET_DEFAULT_HTTP_PORT, 0);
-    if (!connect)
-    {
-        WinHttpCloseHandle(session);
-        return false;
-    }
-
-    HINTERNET request = WinHttpOpenRequest(connect, L"GET", widePath.c_str(), nullptr,
-                                           WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
-                                           secure ? WINHTTP_FLAG_SECURE : 0);
-    if (!request)
-    {
-        WinHttpCloseHandle(connect);
-        WinHttpCloseHandle(session);
-        return false;
-    }
-
-    bool ok = WinHttpSendRequest(request, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-                                 WINHTTP_NO_REQUEST_DATA, 0, 0, 0) != FALSE;
-    if (ok)
-        ok = WinHttpReceiveResponse(request, nullptr) != FALSE;
-
-    DWORD status = 0;
-    DWORD statusSize = sizeof(status);
-    if (ok)
-    {
-        WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-                            WINHTTP_HEADER_NAME_BY_INDEX, &status, &statusSize, WINHTTP_NO_HEADER_INDEX);
-        ok = status == 200;
-    }
-
-    std::ofstream file;
-    if (ok)
-    {
-        file.open(outputPath, std::ios::binary | std::ios::trunc);
-        ok = file.is_open();
-    }
-
-    DWORD available = 0;
-    while (ok && WinHttpQueryDataAvailable(request, &available) && available > 0)
-    {
-        char buffer[65536];
-        DWORD read = 0;
-        const DWORD chunk = available < sizeof(buffer) ? available : static_cast<DWORD>(sizeof(buffer));
-        if (!WinHttpReadData(request, buffer, chunk, &read) || read == 0)
-        {
-            ok = false;
-            break;
-        }
-        file.write(buffer, read);
-        if (!file.good())
-        {
-            ok = false;
-            break;
-        }
-    }
-
-    if (file.is_open())
-        file.close();
-    WinHttpCloseHandle(request);
-    WinHttpCloseHandle(connect);
-    WinHttpCloseHandle(session);
-
-    if (!ok)
-        DeleteFileA(outputPath.c_str());
-    return ok;
-}
-
-static std::string QuoteArg(const std::string& value)
-{
-    std::string result = "\"";
-    for (const char ch : value)
-    {
-        if (ch == '\"')
-            result += '\\';
-        result += ch;
-    }
-    result += '\"';
-    return result;
-}
-
-static std::string BatchQuote(const std::string& value)
-{
-    std::string result = "\"";
-    for (const char ch : value)
-    {
-        if (ch == '"')
-            result += '^';
-        if (ch == '%')
-            result += '%';
-        result += ch;
-    }
-    result += '"';
-    return result;
-}
-
-static bool StartProcess(const std::string& commandLine, PROCESS_INFORMATION& pi, DWORD flags = 0)
-{
-    STARTUPINFOA si{ sizeof(si) };
-    si.dwFlags = STARTF_USESHOWWINDOW;
-    si.wShowWindow = SW_HIDE;
-    std::vector<char> command(commandLine.begin(), commandLine.end());
-    command.push_back('\0');
-    return CreateProcessA(nullptr, command.data(), nullptr, nullptr, FALSE, flags, nullptr, nullptr, &si, &pi) != FALSE;
-}
-
-static bool RunHiddenCommand(const std::string& commandLine, DWORD timeout)
-{
-    PROCESS_INFORMATION pi{};
-    if (!StartProcess(commandLine, pi, CREATE_NO_WINDOW))
-        return false;
-    const DWORD wait = WaitForSingleObject(pi.hProcess, timeout);
-    DWORD code = 1;
-    GetExitCodeProcess(pi.hProcess, &code);
-    CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess);
-    return wait == WAIT_OBJECT_0 && code == 0;
-}
-
-static bool RemoveTree(const std::string& path)
-{
-    WIN32_FIND_DATAA data{};
-    HANDLE find = FindFirstFileA((path + "\\*").c_str(), &data);
-    if (find != INVALID_HANDLE_VALUE)
-    {
-        do
-        {
-            if (strcmp(data.cFileName, ".") == 0 || strcmp(data.cFileName, "..") == 0)
-                continue;
-            const std::string child = path + "\\" + data.cFileName;
-            if (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
-                RemoveTree(child);
-            else
-                DeleteFileA(child.c_str());
-        } while (FindNextFileA(find, &data));
-        FindClose(find);
-    }
-    RemoveDirectoryA(path.c_str());
-    return true;
-}
-
-static bool IsRegularFile(const std::string& path)
-{
-    const DWORD attr = GetFileAttributesA(path.c_str());
-    return attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY);
-}
-
-static bool ExtractArchive(const std::string& archivePath, const std::string& outputDir)
-{
-    RemoveTree(outputDir);
-    if (!CreateDirectoryA(outputDir.c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS)
-        return false;
-    const std::string command = "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"Expand-Archive -LiteralPath '" +
-                                archivePath + "' -DestinationPath '" + outputDir + "' -Force\"";
-    return RunHiddenCommand(command, 60000);
-}
-
-static std::string FindUpdateRoot(const std::string& root)
-{
-    if (IsRegularFile(root + "\\Injector.exe") && IsRegularFile(root + "\\dysonbehind.dll"))
-        return root;
-    if (IsRegularFile(root + "\\release\\Injector.exe") && IsRegularFile(root + "\\release\\dysonbehind.dll"))
-        return root + "\\release";
-
-    WIN32_FIND_DATAA data{};
-    HANDLE find = FindFirstFileA((root + "\\*").c_str(), &data);
-    if (find == INVALID_HANDLE_VALUE)
-        return {};
-    std::string result;
-    do
-    {
-        if ((data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
-            strcmp(data.cFileName, ".") != 0 && strcmp(data.cFileName, "..") != 0)
-        {
-            const std::string candidate = root + "\\" + data.cFileName;
-            if (IsRegularFile(candidate + "\\Injector.exe") && IsRegularFile(candidate + "\\dysonbehind.dll"))
-            {
-                result = candidate;
-                break;
-            }
-        }
-    } while (FindNextFileA(find, &data));
-    FindClose(find);
-    return result;
-}
-
-static bool WriteUpdaterScript(const std::string& path, const std::string& archive,
-                               const std::string& extractDir, const std::string& sourceDir,
-                               const std::string& exeDir, const std::string& restartArgs)
-{
-    std::ofstream script(path, std::ios::binary | std::ios::trunc);
-    if (!script.is_open())
-        return false;
-    const DWORD pid = GetCurrentProcessId();
-    const std::string errorPath = exeDir + "injector_update_error.txt";
-    script << "@echo off\r\nsetlocal\r\n:wait_loop\r\ntasklist /FI \"PID eq " << pid << "\" 2>nul | find \"" << pid << "\" >nul\r\n";
-    script << "if not errorlevel 1 (timeout /t 1 /nobreak >nul & goto wait_loop)\r\n";
-    script << "timeout /t 1 /nobreak >nul\r\n";
-    script << "copy /Y " << BatchQuote(sourceDir + "\\dysonbehind.dll") << " " << BatchQuote(exeDir + "dysonbehind.dll") << " >nul\r\n";
-    script << "if errorlevel 1 goto failed\r\n";
-    script << "copy /Y " << BatchQuote(sourceDir + "\\Injector.exe") << " " << BatchQuote(exeDir + "Injector.exe") << " >nul\r\n";
-    script << "if errorlevel 1 goto failed\r\n";
-    script << "start \"\" " << BatchQuote(exeDir + "Injector.exe") << restartArgs << "\r\n";
-    script << "del /F /Q " << BatchQuote(archive) << " >nul 2>&1\r\n";
-    script << "rmdir /S /Q " << BatchQuote(extractDir) << " >nul 2>&1\r\n";
-    script << "del /F /Q \"%~f0\" >nul 2>&1\r\nexit /b 0\r\n:failed\r\necho update failed > " << QuoteArg(errorPath) << "\r\nexit /b 1\r\n";
-    return script.good();
-}
-
-static bool PrepareAndLaunchUpdate(const std::string& archivePath, const std::string& restartArgs)
-{
-    char temp[MAX_PATH]{};
-    if (!GetTempPathA(MAX_PATH, temp))
-        return false;
-    const std::string extractDir = std::string(temp) + "region_changer_update\\";
-    if (!ExtractArchive(archivePath, extractDir))
-        return false;
-    const std::string sourceDir = FindUpdateRoot(extractDir);
-    if (sourceDir.empty())
-    {
-        RemoveTree(extractDir);
-        return false;
-    }
-    const std::string scriptPath = ExeDir() + "_region_changer_updater.cmd";
-    DeleteFileA(scriptPath.c_str());
-    if (!WriteUpdaterScript(scriptPath, archivePath, extractDir, sourceDir, ExeDir(), restartArgs))
-    {
-        RemoveTree(extractDir);
-        DeleteFileA(scriptPath.c_str());
-        return false;
-    }
-    PROCESS_INFORMATION pi{};
-    if (!StartProcess("cmd.exe /c " + QuoteArg(scriptPath), pi, CREATE_NO_WINDOW))
-    {
-        RemoveTree(extractDir);
-        DeleteFileA(scriptPath.c_str());
-        return false;
-    }
-    CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess);
-    return true;
-}
-
-static bool CheckForUpdate(std::string& downloadedArchive)
-{
-    LogInfo("checking for updates (current: %s)...", CURRENT_VERSION);
+    LogInfo("проверка обновлений (текущая версия: %s)...", CURRENT_VERSION);
 
     std::string body;
     if (!HttpGet(UPDATE_API_HOST, UPDATE_API_PATH, body))
     {
-        LogWarn("update check failed (network error)");
+        LogWarn("не удалось проверить обновления");
         return false;
     }
 
-    std::string tag = ExtractJsonString(body, "tag_name");
-    if (tag.empty())
+    latestTag = ExtractJsonString(body, "tag_name");
+    if (latestTag.empty())
     {
-        LogWarn("update check failed (bad response)");
+        LogWarn("сервер вернул некорректный ответ");
         return false;
     }
 
-    std::string version = tag;
+    std::string version = latestTag;
     if (!version.empty() && (version[0] == 'v' || version[0] == 'V'))
         version.erase(0, 1);
 
     if (!IsNewerVersion(version, CURRENT_VERSION))
     {
-        LogInfo("up to date");
+        LogInfo("установлена последняя версия");
         return false;
     }
 
-    char temp[MAX_PATH]{};
-    if (!GetTempPathA(MAX_PATH, temp))
-    {
-        LogWarn("unable to get temporary path");
-        return false;
-    }
-    downloadedArchive = std::string(temp) + "region_changer_update.zip";
-    DeleteFileA(downloadedArchive.c_str());
-    if (!DownloadFile("https://github.com" + std::string(UPDATE_ASSET_PATH), downloadedArchive))
-    {
-        DeleteFileA(downloadedArchive.c_str());
-        LogWarn("update download failed");
-        return false;
-    }
-
-    LogInfo("update downloaded: %s", downloadedArchive.c_str());
+    LogInfo("доступно обновление: %s -> %s", CURRENT_VERSION, latestTag.c_str());
     return true;
 }
 
@@ -732,22 +437,11 @@ static bool DoLoad(const std::string& path, DWORD pid)
     return true;
 }
 
-static bool PrepareAndLaunchUpdate(const std::string& archivePath, const std::string& restartArgs);
-
-static std::string BuildRestartArgs(int argc, char* argv[], int first)
+int main(int argc, char* argv[])
 {
-    std::string args;
-    for (int i = first; i < argc; ++i)
-    {
-        if (!args.empty())
-            args += ' ';
-        args += QuoteArg(argv[i]);
-    }
-    return args;
-}
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
 
-static bool PrepareAndLaunchUpdate(const std::string& archivePath, const std::string& restartArgs);int main(int argc, char* argv[])
-{
     std::string dllPath;
     for (int i = 1; i < argc; ++i)
     {
@@ -759,21 +453,35 @@ static bool PrepareAndLaunchUpdate(const std::string& archivePath, const std::st
 
     fopen_s(&g_pLog, (ExeDir() + "injector_debug.txt").c_str(), "w");
 
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
+
     LogInfo("dysonbehind injector");
     LogInfo("dll: %s", dllPath.c_str());
 
-    std::string updateArchive;
-    if (CheckForUpdate(updateArchive))
+    std::string latestTag;
+    if (CheckForUpdate(latestTag))
     {
-        const std::string restartArgs = BuildRestartArgs(argc, argv, 1);
-        if (PrepareAndLaunchUpdate(updateArchive, restartArgs))
+        printf("\nДоступно обновление %s -> %s.\n", CURRENT_VERSION, latestTag.c_str());
+        printf("Хотите открыть страницу нового обновления?\n");
+        printf("1. Да\n");
+        printf("2. Нет\n");
+        printf("Ваш выбор: ");
+        char answer[16]{};
+        fgets(answer, sizeof(answer), stdin);
+        if (answer[0] == '1')
         {
-            LogInfo("update prepared, stopping current injector");
-            if (g_pLog) fclose(g_pLog);
-            return 0;
+            const HINSTANCE opened = ShellExecuteA(nullptr, "open", UPDATE_RELEASE_URL,
+                                                    nullptr, nullptr, SW_SHOWNORMAL);
+            if (reinterpret_cast<INT_PTR>(opened) <= 32)
+                LogWarn("не удалось открыть страницу обновления");
+            else
+                LogInfo("страница обновления открыта");
         }
-        LogWarn("update preparation failed, continuing current version");
-        DeleteFileA(updateArchive.c_str());
+        else
+        {
+            LogInfo("обновление пропущено");
+        }
     }
 
     if (!IsAdmin())
