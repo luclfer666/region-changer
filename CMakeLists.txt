@@ -60,7 +60,7 @@ target_compile_definitions(Injector PRIVATE
     _WIN32_WINNT=0x0601 WINVER=0x0601
     $<$<CONFIG:Debug>:_DEBUG>
     $<$<CONFIG:Release>:NDEBUG>)
-target_link_libraries(Injector PRIVATE shell32)
+target_link_libraries(Injector PRIVATE shell32 wininet)
 # Просит права администратора при запуске — UAC сам поднимает окно.
 set_target_properties(Injector PROPERTIES LINK_FLAGS "/MANIFESTUAC:\"level='requireAdministrator' uiAccess='false'\"")
 if(MSVC)
