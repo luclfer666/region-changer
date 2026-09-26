@@ -1,19 +1,28 @@
 #include <Windows.h>
 #include <TlHelp32.h>
 #include <shellapi.h>
+#include <wininet.h>
 
 #include <cstdio>
 #include <cstdarg>
 #include <cstring>
 #include <string>
+#include <vector>
 #include <ctime>
 #include <thread>
 
 #pragma comment(lib, "shell32.lib")
+#pragma comment(lib, "wininet.lib")
 
 static constexpr DWORD STEAM_APPID        = 1422450;
 static constexpr DWORD PROCESS_STALE_SECS = 10;
 static constexpr const char* TARGET_PROC  = "deadlock.exe";
+
+static constexpr const char* CURRENT_VERSION    = "1.0.1";
+static constexpr const char* UPDATE_API_HOST    = "api.github.com";
+static constexpr const char* UPDATE_API_PATH    = "/repos/wrongsprat/region-changer/releases/latest";
+static constexpr const char* UPDATE_ASSET_PATH  = "/wrongsprat/region-changer/releases/latest/download/release.zip";
+static constexpr const char* UPDATE_SWITCH_ARG  = "--apply-update";
 
 static FILE* g_pLog = nullptr;
 
@@ -83,6 +92,301 @@ static std::string ErrStr(DWORD e = 0)
     char code[32]{};
     _snprintf_s(code, sizeof(code), _TRUNCATE, " (0x%lX)", e);
     return s + code;
+}
+
+static bool HttpGet(const char* host, const char* path, std::string& out)
+{
+    HINTERNET hSession = InternetOpenA("region-changer-injector", INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0);
+    if (!hSession)
+        return false;
+
+    HINTERNET hConnect = InternetConnectA(hSession, host, INTERNET_DEFAULT_HTTPS_PORT,
+                                          nullptr, nullptr, INTERNET_SERVICE_HTTP, 0, 0);
+    if (!hConnect)
+    {
+        InternetCloseHandle(hSession);
+        return false;
+    }
+
+    const char* headers = "User-Agent: region-changer-injector\r\nAccept: application/vnd.github+json\r\n";
+    HINTERNET hRequest = HttpOpenRequestA(hConnect, "GET", path, nullptr, nullptr, nullptr,
+                                          INTERNET_FLAG_SECURE | INTERNET_FLAG_RELOAD, 0);
+    if (!hRequest)
+    {
+        InternetCloseHandle(hConnect);
+        InternetCloseHandle(hSession);
+        return false;
+    }
+
+    bool ok = HttpSendRequestA(hRequest, headers, static_cast<DWORD>(strlen(headers)), nullptr, 0) != FALSE;
+    if (ok)
+    {
+        DWORD status = 0, statusLen = sizeof(status);
+        HttpQueryInfoA(hRequest, HTTP_QUERY_FLAG_NUMBER | HTTP_QUERY_STATUS_CODE, &status, &statusLen, nullptr);
+        ok = (status == 200);
+    }
+
+    if (ok)
+    {
+        char buf[4096];
+        DWORD read = 0;
+        while (InternetReadFile(hRequest, buf, sizeof(buf), &read) && read > 0)
+            out.append(buf, read);
+    }
+
+    InternetCloseHandle(hRequest);
+    InternetCloseHandle(hConnect);
+    InternetCloseHandle(hSession);
+    return ok;
+}
+
+static std::string ExtractJsonString(const std::string& json, const char* key)
+{
+    const std::string needle = std::string("\"") + key + "\":\"";
+    const auto pos = json.find(needle);
+    if (pos == std::string::npos)
+        return {};
+    const auto start = pos + needle.size();
+    const auto end = json.find('"', start);
+    if (end == std::string::npos)
+        return {};
+    return json.substr(start, end - start);
+}
+
+static int NextVersionPart(const std::string& v, size_t& idx)
+{
+    int val = 0;
+    while (idx < v.size() && v[idx] >= '0' && v[idx] <= '9')
+    {
+        val = val * 10 + (v[idx] - '0');
+        ++idx;
+    }
+    if (idx < v.size() && v[idx] == '.')
+        ++idx;
+    return val;
+}
+
+static bool IsNewerVersion(const std::string& latest, const std::string& current)
+{
+    size_t li = 0, ci = 0;
+    while (li < latest.size() || ci < current.size())
+    {
+        const int lp = NextVersionPart(latest, li);
+        const int cp = NextVersionPart(current, ci);
+        if (lp != cp)
+            return lp > cp;
+    }
+    return false;
+}
+
+static bool DownloadFile(const char* host, const char* path, const std::string& outputPath)
+{
+    HINTERNET hSession = InternetOpenA("region-changer-injector", INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0);
+    if (!hSession)
+        return false;
+
+    HINTERNET hConnect = InternetConnectA(hSession, host, INTERNET_DEFAULT_HTTPS_PORT,
+                                          nullptr, nullptr, INTERNET_SERVICE_HTTP, 0, 0);
+    if (!hConnect)
+    {
+        InternetCloseHandle(hSession);
+        return false;
+    }
+
+    const char* headers = "User-Agent: region-changer-injector\r\nAccept: application/octet-stream\r\n";
+    HINTERNET hRequest = HttpOpenRequestA(hConnect, "GET", path, nullptr, nullptr, nullptr,
+                                          INTERNET_FLAG_SECURE | INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE,
+                                          0);
+    if (!hRequest)
+    {
+        InternetCloseHandle(hConnect);
+        InternetCloseHandle(hSession);
+        return false;
+    }
+
+    bool ok = HttpSendRequestA(hRequest, headers, static_cast<DWORD>(strlen(headers)), nullptr, 0) != FALSE;
+    if (ok)
+    {
+        DWORD status = 0, statusLen = sizeof(status);
+        HttpQueryInfoA(hRequest, HTTP_QUERY_FLAG_NUMBER | HTTP_QUERY_STATUS_CODE, &status, &statusLen, nullptr);
+        ok = status == 200;
+    }
+
+    HANDLE hFile = INVALID_HANDLE_VALUE;
+    if (ok)
+    {
+        hFile = CreateFileA(outputPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                            FILE_ATTRIBUTE_NORMAL, nullptr);
+        ok = hFile != INVALID_HANDLE_VALUE;
+    }
+
+    if (ok)
+    {
+        char buf[8192];
+        DWORD read = 0;
+        while (InternetReadFile(hRequest, buf, sizeof(buf), &read) && read > 0)
+        {
+            DWORD written = 0;
+            if (!WriteFile(hFile, buf, read, &written, nullptr) || written != read)
+            {
+                ok = false;
+                break;
+            }
+        }
+    }
+
+    if (hFile != INVALID_HANDLE_VALUE)
+        CloseHandle(hFile);
+    InternetCloseHandle(hRequest);
+    InternetCloseHandle(hConnect);
+    InternetCloseHandle(hSession);
+    return ok;
+}
+
+static std::string QuoteArg(const std::string& value)
+{
+    std::string result = "\"";
+    for (const char ch : value)
+    {
+        if (ch == '\"')
+            result += '\\';
+        result += ch;
+    }
+    result += '\"';
+    return result;
+}
+
+static bool StartProcess(const std::string& commandLine, PROCESS_INFORMATION& pi)
+{
+    STARTUPINFOA si{ sizeof(si) };
+    std::vector<char> command(commandLine.begin(), commandLine.end());
+    command.push_back('\0');
+    return CreateProcessA(nullptr, command.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi) != FALSE;
+}
+
+static bool WaitForProcess(DWORD pid)
+{
+    HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, pid);
+    if (!h)
+        return false;
+    const DWORD result = WaitForSingleObject(h, 30000);
+    CloseHandle(h);
+    return result == WAIT_OBJECT_0;
+}
+
+static bool RunExtractor(const std::string& archivePath, const std::string& outputDir)
+{
+    const std::string command = "tar.exe -xf " + QuoteArg(archivePath) + " -C " + QuoteArg(outputDir);
+    PROCESS_INFORMATION pi{};
+    if (!StartProcess(command, pi))
+        return false;
+    const DWORD result = WaitForSingleObject(pi.hProcess, 60000);
+    DWORD exitCode = 1;
+    GetExitCodeProcess(pi.hProcess, &exitCode);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return result == WAIT_OBJECT_0 && exitCode == 0;
+}
+
+static bool ReplaceFileFrom(const std::string& source, const std::string& destination)
+{
+    const std::string temporary = destination + ".update.tmp";
+    if (!CopyFileA(source.c_str(), temporary.c_str(), FALSE))
+        return false;
+    if (!MoveFileExA(temporary.c_str(), destination.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+    {
+        DeleteFileA(temporary.c_str());
+        return false;
+    }
+    return true;
+}
+
+static bool ApplyUpdate(const std::string& archivePath, DWORD parentPid, const std::string& exeDir,
+                        const std::string& restartArgs)
+{
+    if (!WaitForProcess(parentPid))
+        return false;
+
+    const std::string stagingDir = exeDir + "update_staging";
+    RemoveDirectoryA(stagingDir.c_str());
+    if (!CreateDirectoryA(stagingDir.c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS)
+        return false;
+
+    if (!RunExtractor(archivePath, stagingDir))
+        return false;
+
+    std::string sourceInjector = stagingDir + "\\Injector.exe";
+    std::string sourceDll = stagingDir + "\\dysonbehind.dll";
+    if (GetFileAttributesA(sourceInjector.c_str()) == INVALID_FILE_ATTRIBUTES ||
+        GetFileAttributesA(sourceDll.c_str()) == INVALID_FILE_ATTRIBUTES)
+    {
+        sourceInjector = stagingDir + "\\release\\Injector.exe";
+        sourceDll = stagingDir + "\\release\\dysonbehind.dll";
+    }
+
+    if (GetFileAttributesA(sourceInjector.c_str()) == INVALID_FILE_ATTRIBUTES ||
+        GetFileAttributesA(sourceDll.c_str()) == INVALID_FILE_ATTRIBUTES)
+        return false;
+
+    const std::string destinationInjector = exeDir + "Injector.exe";
+    const std::string destinationDll = exeDir + "dysonbehind.dll";
+    if (!ReplaceFileFrom(sourceDll, destinationDll) || !ReplaceFileFrom(sourceInjector, destinationInjector))
+        return false;
+
+    DeleteFileA(archivePath.c_str());
+    DeleteFileA((stagingDir + "\\Injector.exe").c_str());
+    DeleteFileA((stagingDir + "\\dysonbehind.dll").c_str());
+    RemoveDirectoryA(stagingDir.c_str());
+
+    PROCESS_INFORMATION pi{};
+    const std::string command = QuoteArg(destinationInjector) + restartArgs;
+    if (!StartProcess(command, pi))
+        return false;
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return true;
+}
+
+static bool CheckForUpdate(std::string& downloadedArchive)
+{
+    LogInfo("checking for updates (current: %s)...", CURRENT_VERSION);
+
+    std::string body;
+    if (!HttpGet(UPDATE_API_HOST, UPDATE_API_PATH, body))
+    {
+        LogWarn("update check failed (network error)");
+        return false;
+    }
+
+    std::string tag = ExtractJsonString(body, "tag_name");
+    if (tag.empty())
+    {
+        LogWarn("update check failed (bad response)");
+        return false;
+    }
+
+    std::string version = tag;
+    if (!version.empty() && (version[0] == 'v' || version[0] == 'V'))
+        version.erase(0, 1);
+
+    if (!IsNewerVersion(version, CURRENT_VERSION))
+    {
+        LogInfo("up to date");
+        return false;
+    }
+
+    LogInfo("update available: %s -> %s", CURRENT_VERSION, tag.c_str());
+    downloadedArchive = ExeDir() + "release_update.zip";
+    DeleteFileA(downloadedArchive.c_str());
+    if (!DownloadFile("github.com", UPDATE_ASSET_PATH, downloadedArchive))
+    {
+        DeleteFileA(downloadedArchive.c_str());
+        LogWarn("update download failed");
+        return false;
+    }
+
+    LogInfo("update downloaded: %s", downloadedArchive.c_str());
+    return true;
 }
 
 static bool IsAdmin()
@@ -313,8 +617,34 @@ static bool DoLoad(const std::string& path, DWORD pid)
     return true;
 }
 
+static std::string BuildRestartArgs(int argc, char* argv[], int first)
+{
+    std::string args;
+    for (int i = first; i < argc; ++i)
+    {
+        if (!args.empty())
+            args += ' ';
+        args += QuoteArg(argv[i]);
+    }
+    return args;
+}
+
+static int RunUpdateHelper(int argc, char* argv[])
+{
+    if (argc < 4)
+        return 1;
+
+    const std::string archivePath = argv[2];
+    const DWORD parentPid = static_cast<DWORD>(strtoul(argv[3], nullptr, 10));
+    const std::string restartArgs = BuildRestartArgs(argc, argv, 4);
+    return ApplyUpdate(archivePath, parentPid, ExeDir(), restartArgs) ? 0 : 1;
+}
+
 int main(int argc, char* argv[])
 {
+    if (argc >= 2 && strcmp(argv[1], UPDATE_SWITCH_ARG) == 0)
+        return RunUpdateHelper(argc, argv);
+
     std::string dllPath;
     for (int i = 1; i < argc; ++i)
     {
@@ -328,6 +658,25 @@ int main(int argc, char* argv[])
 
     LogInfo("dysonbehind injector");
     LogInfo("dll: %s", dllPath.c_str());
+
+    std::string updateArchive;
+    if (CheckForUpdate(updateArchive))
+    {
+        char pid[32]{};
+        _snprintf_s(pid, sizeof(pid), _TRUNCATE, "%lu", GetCurrentProcessId());
+        const std::string command = QuoteArg(ExeDir() + "Injector.exe") + " " +
+                                    UPDATE_SWITCH_ARG + " " + QuoteArg(updateArchive) + " " + pid +
+                                    " " + BuildRestartArgs(argc, argv, 1);
+        PROCESS_INFORMATION pi{};
+        if (StartProcess(command, pi))
+        {
+            CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
+            if (g_pLog) fclose(g_pLog);
+            return 0;
+        }
+        LogWarn("update helper launch failed, continuing current version");
+    }
 
     if (!IsAdmin())
     {
