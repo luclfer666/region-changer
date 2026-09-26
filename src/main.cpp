@@ -872,6 +872,30 @@ static long __stdcall Hook_Present(IDXGISwapChain* pSwap, UINT sync, UINT flags)
 
 static bool InstallPresentHook()
 {
+    WNDCLASSEXA wc{};
+    wc.cbSize = sizeof(WNDCLASSEXA);
+    wc.style = CS_HREDRAW | CS_VREDRAW;
+    wc.lpfnWndProc = DefWindowProcA;
+    wc.hInstance = GetModuleHandleA(nullptr);
+    wc.lpszClassName = "RegionChangerDummyClass";
+
+    RegisterClassExA(&wc);
+
+    HWND hDummyWnd = CreateWindowExA(
+        0,
+        wc.lpszClassName,
+        "RegionChangerDummyWindow",
+        WS_OVERLAPPEDWINDOW,
+        0, 0, 100, 100,
+        nullptr, nullptr, wc.hInstance, nullptr);
+
+    if (!hDummyWnd)
+    {
+        DEV_ERR("InstallPresentHook: CreateWindowExA failed (err=0x%08X)", GetLastError());
+        UnregisterClassA(wc.lpszClassName, wc.hInstance);
+        return false;
+    }
+
     ID3D11Device* pDev = nullptr;
     ID3D11DeviceContext* pCtx = nullptr;
     IDXGISwapChain* pSwap = nullptr;
@@ -888,17 +912,30 @@ static bool InstallPresentHook()
     scd.BufferCount = 2;
     scd.BufferDesc = md;
     scd.SampleDesc = sd;
-    scd.OutputWindow = GetForegroundWindow();
+    scd.OutputWindow = hDummyWnd;
     scd.Windowed = TRUE;
     scd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
 
-    const HRESULT hr = D3D11CreateDeviceAndSwapChain(
-        nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, nullptr, 0,
-        D3D11_SDK_VERSION, &scd, &pSwap, &pDev, nullptr, &pCtx);
+    D3D_FEATURE_LEVEL featLevel = D3D_FEATURE_LEVEL_11_0;
+    D3D_FEATURE_LEVEL featLevelOut = D3D_FEATURE_LEVEL_11_0;
+
+    HRESULT hr = D3D11CreateDeviceAndSwapChain(
+        nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0,
+        &featLevel, 1, D3D11_SDK_VERSION, &scd, &pSwap, &pDev, &featLevelOut, &pCtx);
+
+    if (FAILED(hr))
+    {
+        DEV_WARN("InstallPresentHook: HARDWARE device creation failed (hr=0x%08X), trying WARP...", hr);
+        hr = D3D11CreateDeviceAndSwapChain(
+            nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0,
+            &featLevel, 1, D3D11_SDK_VERSION, &scd, &pSwap, &pDev, &featLevelOut, &pCtx);
+    }
 
     if (FAILED(hr))
     {
         DEV_ERR("InstallPresentHook: D3D11CreateDeviceAndSwapChain failed (hr=0x%08X)", hr);
+        DestroyWindow(hDummyWnd);
+        UnregisterClassA(wc.lpszClassName, wc.hInstance);
         return false;
     }
 
@@ -908,6 +945,9 @@ static bool InstallPresentHook()
     pSwap->Release();
     pDev->Release();
     pCtx->Release();
+
+    DestroyWindow(hDummyWnd);
+    UnregisterClassA(wc.lpszClassName, wc.hInstance);
 
     if (MH_CreateHook(pPresent, &Hook_Present,
                       reinterpret_cast<void**>(&Present_o)) != MH_OK)
@@ -922,7 +962,7 @@ static bool InstallPresentHook()
 
 static DWORD WINAPI InitThread(LPVOID)
 {
-    DEV_LOG("StartCheatThread: dll_dir=%s",
+    DEV_LOG("InitThread: dll_dir=%s",
             []() { static char s_dir[MAX_PATH]{}; HMODULE h = nullptr;
                    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
                                       GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
@@ -931,7 +971,7 @@ static DWORD WINAPI InitThread(LPVOID)
                    if (char* p = strrchr(s_dir, '\\')) *(p + 1) = '\0';
                    return s_dir; }());
 
-    DEV_LOG("StartCheatThread: waiting for game modules...");
+    DEV_LOG("InitThread: waiting for game modules...");
     for (int i = 0; i < 300; ++i)
     {
         if (GetModuleHandleA("client.dll") && GetModuleHandleA("inputsystem.dll"))
@@ -942,33 +982,33 @@ static DWORD WINAPI InitThread(LPVOID)
     HMODULE hClient = GetModuleHandleA("client.dll");
     HMODULE hInput = GetModuleHandleA("inputsystem.dll");
     if (!hClient)
-        DEV_WARN("StartCheatThread: client.dll NOT loaded after 30s wait");
+        DEV_WARN("InitThread: client.dll NOT loaded after 30s wait");
     else
-        DEV_LOG("StartCheatThread: client.dll=%p", hClient);
+        DEV_LOG("InitThread: client.dll=%p", hClient);
     if (!hInput)
-        DEV_WARN("StartCheatThread: inputsystem.dll NOT loaded after 30s wait");
+        DEV_WARN("InitThread: inputsystem.dll NOT loaded after 30s wait");
     else
-        DEV_LOG("StartCheatThread: inputsystem.dll=%p", hInput);
+        DEV_LOG("InitThread: inputsystem.dll=%p", hInput);
 
     if (MH_Initialize() != MH_OK)
     {
-        DEV_ERR("StartCheatThread: MH_Initialize failed");
+        DEV_ERR("InitThread: MH_Initialize failed");
         return 1;
     }
-    DEV_LOG("StartCheatThread: MinHook initialized");
+    DEV_LOG("InitThread: MinHook initialized");
 
     if (!InstallPresentHook())
     {
-        DEV_ERR("StartCheatThread: Present hook failed — aborting");
+        DEV_ERR("InitThread: Present hook failed — aborting");
         return 2;
     }
 
     if (MH_EnableHook(MH_ALL_HOOKS) != MH_OK)
     {
-        DEV_ERR("StartCheatThread: MH_EnableHook failed");
+        DEV_ERR("InitThread: MH_EnableHook failed");
         return 3;
     }
-    DEV_LOG("StartCheatThread: engine hooks installed — waiting for first Present");
+    DEV_LOG("InitThread: engine hooks installed — waiting for first Present");
 
     return 0;
 }
