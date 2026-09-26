@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdarg>
 #include <cstring>
+#include <cctype>
 #include <string>
 #include <vector>
 #include <fstream>
@@ -20,7 +21,7 @@ static constexpr DWORD STEAM_APPID        = 1422450;
 static constexpr DWORD PROCESS_STALE_SECS = 10;
 static constexpr const char* TARGET_PROC  = "deadlock.exe";
 
-static constexpr const char* CURRENT_VERSION    = "1.0.1";
+static constexpr const char* CURRENT_VERSION    = "1.0.2";
 static constexpr const char* UPDATE_API_HOST    = "api.github.com";
 static constexpr const char* UPDATE_API_PATH    = "/repos/wrongsprat/region-changer/releases/latest";
 static constexpr const char* UPDATE_ASSET_PATH  = "/wrongsprat/region-changer/releases/latest/download/release.zip";
@@ -294,6 +295,21 @@ static std::string QuoteArg(const std::string& value)
     return result;
 }
 
+static std::string BatchQuote(const std::string& value)
+{
+    std::string result = "\"";
+    for (const char ch : value)
+    {
+        if (ch == '"')
+            result += '^';
+        if (ch == '%')
+            result += '%';
+        result += ch;
+    }
+    result += '"';
+    return result;
+}
+
 static bool StartProcess(const std::string& commandLine, PROCESS_INFORMATION& pi, DWORD flags = 0)
 {
     STARTUPINFOA si{ sizeof(si) };
@@ -396,13 +412,13 @@ static bool WriteUpdaterScript(const std::string& path, const std::string& archi
     script << "@echo off\r\nsetlocal\r\n:wait_loop\r\ntasklist /FI \"PID eq " << pid << "\" 2>nul | find \"" << pid << "\" >nul\r\n";
     script << "if not errorlevel 1 (timeout /t 1 /nobreak >nul & goto wait_loop)\r\n";
     script << "timeout /t 1 /nobreak >nul\r\n";
-    script << "copy /Y " << QuoteArg(sourceDir + "\\dysonbehind.dll") << " " << QuoteArg(exeDir + "dysonbehind.dll") << " >nul\r\n";
+    script << "copy /Y " << BatchQuote(sourceDir + "\\dysonbehind.dll") << " " << BatchQuote(exeDir + "dysonbehind.dll") << " >nul\r\n";
     script << "if errorlevel 1 goto failed\r\n";
-    script << "copy /Y " << QuoteArg(sourceDir + "\\Injector.exe") << " " << QuoteArg(exeDir + "Injector.exe") << " >nul\r\n";
+    script << "copy /Y " << BatchQuote(sourceDir + "\\Injector.exe") << " " << BatchQuote(exeDir + "Injector.exe") << " >nul\r\n";
     script << "if errorlevel 1 goto failed\r\n";
-    script << "start \"\" " << QuoteArg(exeDir + "Injector.exe") << restartArgs << "\r\n";
-    script << "del /F /Q " << QuoteArg(archive) << " >nul 2>&1\r\n";
-    script << "rmdir /S /Q " << QuoteArg(extractDir) << " >nul 2>&1\r\n";
+    script << "start \"\" " << BatchQuote(exeDir + "Injector.exe") << restartArgs << "\r\n";
+    script << "del /F /Q " << BatchQuote(archive) << " >nul 2>&1\r\n";
+    script << "rmdir /S /Q " << BatchQuote(extractDir) << " >nul 2>&1\r\n";
     script << "del /F /Q \"%~f0\" >nul 2>&1\r\nexit /b 0\r\n:failed\r\necho update failed > " << QuoteArg(errorPath) << "\r\nexit /b 1\r\n";
     return script.good();
 }
