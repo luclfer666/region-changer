@@ -17,6 +17,8 @@ Region Changer — это DLL-модуль и Injector для Deadlock, кото
 - автоматический запуск Deadlock через Steam, если игра ещё не запущена;
 - ожидание свежего процесса игры перед инжектом;
 - загрузка `dysonbehind.dll` в процесс Deadlock.
+- <img width="1399" height="1049" alt="image" src="https://github.com/user-attachments/assets/fa87354f-0b20-4642-908e-b7e82f7e453a" />
+
 
 ## Структура релиза
 
