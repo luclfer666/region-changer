@@ -215,7 +215,7 @@ static bool CheckForUpdate(std::string& latestTag)
             if (ch == '\r' || ch == '\n' || ch == 27) // Enter or Esc
             {
                 cancelRequested.store(true);
-                LogInfo("проверка обновлений пропущена пользователем");
+                LogInfo("\033[92mпроверка обновлений пропущена пользователем\033[0m");
                 return false;
             }
         }
@@ -478,6 +478,26 @@ int main(int argc, char* argv[])
 
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleCP(CP_UTF8);
+
+    printf("// ============================================================\n");
+    printf("//                                                            \n");
+    printf("//   . o      .       .      o .      .       .      o .  \n");
+    printf("//   .      .    . o    .  .      .      . o    .  .      \n");
+    printf("//                                                            \n");
+    printf("//   .   zzz...          .            ...zzz    .          \n");
+    printf("//   . o  /\\_/\\   .   o    .    . o   /\\_/\\  o    .       \n");
+    printf("//   .   ( -.- )    .    .    .      ( -.- )  .   .   .   \n");
+    printf("//  o .   \\ ~ /  o    .    o    .     \\ ~ /     o    .  o \n");
+    printf("//     .   )=(      .    .    .    .   )=(   .    .    .  \n");
+    printf("//   .    '---'  .    o    .    .     '---' .    o    .   \n");
+    printf("//                                                            \n");
+    printf("//      .      .    . o    .  .      .      . o    .  .      \n");
+    printf("//      . o      .       .      o .      .       .      o .  \n");
+    printf("//                                                            \n");
+    printf("//           see you next patch  ~  dyson            \n");
+    printf("//                                                            \n");
+    printf("// ===========================================================\n");
+    printf("\nProject: https://github.com/wrongsprat/region-changer\n\n");
 
     LogInfo("dysonbehind injector");
     LogInfo("dll: %s", dllPath.c_str());
