@@ -818,6 +818,7 @@ static void RenderMenu()
     ImGui::SameLine();
     AnimColorSwatch("##accent_color", &g_vAccentColor);
     ImGui::SameLine();
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 2.f); // Сместили ВНИЗ
     if (AnimSmallButton(Tr("RU", "EN")))
     {
         PlayUISound(UISound::Select);
